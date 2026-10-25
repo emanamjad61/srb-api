@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Room Board</title>
+  <style>
+    :root { --bg: #f6f7f9; --card: #fff; --text: #1d2330; --muted: #677085; --ok: #1f8a4c; --warn: #b26a00; --bad: #c0392b; --line: #e2e5eb; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+    header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; padding: 16px 20px; background: var(--card); border-bottom: 1px solid var(--line); }
+    h1 { font-size: 20px; margin: 0; }
+    #subtitle { color: var(--muted); font-size: 13px; }
+    #status { font-size: 13px; font-weight: 600; padding: 4px 10px; border-radius: 999px; }
+    #status.connected { background: #e3f5ea; color: var(--ok); }
+    #status.disconnected { background: #fbe7e5; color: var(--bad); }
+    form { display: flex; gap: 8px; }
+    select, button { font: inherit; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+    main { max-width: 900px; margin: 0 auto; padding: 20px; }
+    #announcement { display: none; margin-bottom: 16px; padding: 12px 14px; border-radius: 8px; background: #fff7e0; border: 1px solid #f0d58a; }
+    #announcement small { display: block; color: var(--muted); }
+    #error { color: var(--bad); }
+    .day { margin: 18px 0 8px; font-weight: 600; color: var(--muted); }
+    .slots { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+    .slot { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px; transition: background .4s; }
+    .slot .time { font-weight: 600; }
+    .slot .left { font-size: 26px; font-weight: 700; color: var(--ok); }
+    .slot.low .left { color: var(--warn); }
+    .slot.full .left { color: var(--bad); }
+    .slot.flash { background: #eaf2ff; }
+    .muted { color: var(--muted); font-size: 13px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1 id="title">Room Board</h1>
+      <div id="subtitle"></div>
+    </div>
+    <form id="picker">
+      <select id="roomSelect" aria-label="Room"></select>
+      <button type="submit">Open</button>
+    </form>
+    <span id="status" class="disconnected">Disconnected</span>
+  </header>
+
+  <main>
+    <div id="announcement"><strong>Announcement:</strong> <span id="announcementText"></span><small id="announcementTime"></small></div>
+    <p id="error"></p>
+    <div id="board"><p class="muted">Pick a room to see its slots.</p></div>
+  </main>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    // Everything that could come from users or the database is written with textContent.
+    const params = new URLSearchParams(location.search);
+    const roomCode = (params.get('room') || '').toUpperCase();
+
+    const $ = (id) => document.getElementById(id);
+    const statusEl = $('status');
+    const boardEl = $('board');
+    const errorEl = $('error');
+    const cards = new Map(); // slotId -> { card, leftEl, seats }
+
+    function el(tag, className, text) {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (text !== undefined) node.textContent = text;
+      return node;
+    }
+
+    function hourLabel(h) {
+      const pad = (n) => String(n).padStart(2, '0');
+      return `${pad(h)}:00 - ${pad(h + 2)}:00`;
+    }
+
+    function setSeatsLeft(entry, seatsLeft) {
+      entry.leftEl.textContent = String(seatsLeft);
+      entry.card.classList.toggle('full', seatsLeft <= 0);
+      entry.card.classList.toggle('low', seatsLeft > 0 && seatsLeft <= Math.ceil(entry.seats / 4));
+    }
+
+    function render(room, slots) {
+      $('title').textContent = `${room.roomCode} · ${room.name}`;
+      $('subtitle').textContent = room.building;
+      document.title = `${room.roomCode} board`;
+      boardEl.replaceChildren();
+      cards.clear();
+      if (!slots.length) {
+        boardEl.append(el('p', 'muted', 'This room has no slots yet.'));
+        return;
+      }
+      let currentDay = null;
+      let grid = null;
+      for (const s of slots) {
+        if (s.date !== currentDay) {
+          currentDay = s.date;
+          boardEl.append(el('div', 'day', s.date));
+          grid = el('div', 'slots');
+          boardEl.append(grid);
+        }
+        const card = el('div', 'slot');
+        const leftEl = el('div', 'left');
+        card.append(el('div', 'time', hourLabel(s.startHour)), leftEl, el('div', 'muted', `seats left of ${s.seats}`));
+        grid.append(card);
+        const entry = { card, leftEl, seats: s.seats };
+        cards.set(s.id, entry);
+        setSeatsLeft(entry, s.seatsLeft);
+      }
+    }
+
+    async function loadRoomList() {
+      try {
+        const res = await fetch('/api/v1/rooms');
+        const rooms = await res.json();
+        const select = $('roomSelect');
+        for (const r of rooms) {
+          const opt = el('option', '', `${r.roomCode} · ${r.name}`);
+          opt.value = r.roomCode;
+          if (r.roomCode === roomCode) opt.selected = true;
+          select.append(opt);
+        }
+      } catch {
+        /* the picker is a convenience; the board still works with ?room= */
+      }
+    }
+
+    $('picker').addEventListener('submit', (e) => {
+      e.preventDefault();
+      location.search = `?room=${encodeURIComponent($('roomSelect').value)}`;
+    });
+
+    const socket = io();
+
+    // 'connect' fires on the first connection and again after every reconnect,
+    // so re-joining here reloads the correct seat counts without a page refresh.
+    socket.on('connect', () => {
+      statusEl.textContent = 'Connected';
+      statusEl.className = 'connected';
+      if (!roomCode) return;
+      socket.emit('join:room', roomCode, (reply) => {
+        if (!reply || !reply.ok) {
+          errorEl.textContent = (reply && reply.error) || 'Could not join room';
+          return;
+        }
+        errorEl.textContent = '';
+        render(reply.room, reply.slots);
+      });
+    });
+
+    socket.on('disconnect', () => {
+      statusEl.textContent = 'Disconnected - reconnecting…';
+      statusEl.className = 'disconnected';
+    });
+
+    socket.on('slot:updated', ({ slotId, seatsLeft }) => {
+      const entry = cards.get(slotId);
+      if (!entry) return;
+      setSeatsLeft(entry, seatsLeft);
+      entry.card.classList.add('flash');
+      setTimeout(() => entry.card.classList.remove('flash'), 600);
+    });
+
+    socket.on('announce', ({ message, at }) => {
+      $('announcementText').textContent = message;
+      $('announcementTime').textContent = new Date(at).toLocaleString();
+      $('announcement').style.display = 'block';
+    });
+
+    loadRoomList();
+  </script>
+</body>
+</html>

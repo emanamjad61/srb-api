@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Board Admin</title>
+  <style>
+    body { margin: 0; font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; background: #f6f7f9; color: #1d2330; }
+    main { max-width: 520px; margin: 40px auto; padding: 0 16px; }
+    h1 { font-size: 22px; }
+    label { display: block; margin: 14px 0 4px; font-weight: 600; }
+    input, textarea, button { font: inherit; width: 100%; padding: 8px 10px; border: 1px solid #d5d9e0; border-radius: 6px; }
+    textarea { min-height: 90px; resize: vertical; }
+    button { margin-top: 12px; background: #1d4ed8; color: #fff; border: none; cursor: pointer; }
+    button:disabled { background: #9aa6bf; cursor: default; }
+    #status { margin-top: 14px; font-weight: 600; }
+    .ok { color: #1f8a4c; } .bad { color: #c0392b; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Board announcements</h1>
+    <form id="connectForm">
+      <label for="key">Admin key</label>
+      <input id="key" type="password" autocomplete="off" required>
+      <button type="submit">Connect</button>
+    </form>
+    <form id="announceForm">
+      <label for="message">Message for every board</label>
+      <textarea id="message" maxlength="500" required></textarea>
+      <button type="submit" id="send" disabled>Send announcement</button>
+    </form>
+    <p id="status"></p>
+  </main>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const statusEl = document.getElementById('status');
+    const sendBtn = document.getElementById('send');
+    let admin = null;
+
+    function show(text, ok) {
+      statusEl.textContent = text;
+      statusEl.className = ok ? 'ok' : 'bad';
+    }
+
+    document.getElementById('connectForm').addEventListener('submit', (e) => {
+      e.preventDefault();
+      if (admin) admin.disconnect();
+      admin = io('/admin', { auth: { adminKey: document.getElementById('key').value } });
+      admin.on('connect', () => { sendBtn.disabled = false; show('Connected as admin', true); });
+      // The server refuses a wrong key in its namespace middleware; err.message carries why.
+      admin.on('connect_error', (err) => { sendBtn.disabled = true; show(`Refused: ${err.message}`, false); });
+      admin.on('disconnect', () => { sendBtn.disabled = true; show('Disconnected', false); });
+    });
+
+    document.getElementById('announceForm').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const message = document.getElementById('message').value;
+      admin.emit('announce', message, (reply) => {
+        if (reply && reply.ok) show('Announcement sent to all boards', true);
+        else show((reply && reply.error) || 'Announcement failed', false);
+      });
+    });
+  </script>
+</body>
+</html>
